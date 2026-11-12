@@ -14,7 +14,7 @@ import socket
 import struct
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
 
 logger = logging.getLogger("aetherbond.adapter")
@@ -64,25 +64,26 @@ class NetworkAdapter:
 def classify_adapter_type(name: str, desc: str) -> str:
     combined = f"{name} {desc}".lower()
 
-    # Explicit Phone USB Tethering & Cellular Devices (DO NOT mark as virtual!)
+    # Explicit Virtual Host-Only / Sandbox Adapters (STRICT FILTER: NEVER BOND THESE!)
     if any(k in combined for k in [
-        "rndis", "remote ndis", "tether", "cellular", "mobile", "apple mobile",
-        "samsung mobile", "android", "lte", "5g", "wwan", "modem"
-    ]):
-        return "cellular"
-
-    # Known Virtual Host-Only / VPN / Container Adapters
-    if any(k in combined for k in [
-        "virtualbox host-only", "vmware", "hyper-v", "wsl", "veth", "docker",
+        "virtualbox", "vmware", "hyper-v", "wsl", "veth", "docker",
         "loopback", "tailscale", "zerotier", "wireguard", "tap-windows"
     ]):
         return "virtual"
+
+    # Phone USB Tethering & Cellular Devices (Remote NDIS, Apple Mobile, Samsung, LTE, 5G)
+    cellular_keywords = [
+        "rndis", "remote ndis", "tether", "cellular", "apple mobile",
+        "samsung mobile", "android", "wwan", "modem"
+    ]
+    if any(k in combined for k in cellular_keywords) or re.search(r"\b(lte|5g|4g|mobile)\b", combined):
+        return "cellular"
 
     # Wi-Fi / Wireless Adapters
     if any(k in combined for k in ["wi-fi", "wifi", "wlan", "wireless", "802.11"]):
         return "wifi"
 
-    # Standard Ethernet / LAN Adapters
+    # Standard Physical Ethernet Adapters
     if any(k in combined for k in ["ethernet", "eth", "realtek", "intel(r) ethernet", "gigabit", "lan"]):
         return "ethernet"
 
@@ -94,7 +95,6 @@ class AdapterManager:
 
     def __init__(self):
         self._cached_adapters: List[NetworkAdapter] = []
-        self._last_topology_hash: str = ""
 
     def get_adapters(self, force_refresh: bool = True) -> List[NetworkAdapter]:
         if self._cached_adapters and not force_refresh:
@@ -113,17 +113,17 @@ class AdapterManager:
         self._cached_adapters = adapters
         return adapters
 
-    def get_bondable_adapters(self, verify_ping: bool = True) -> List[NetworkAdapter]:
+    def get_bondable_adapters(self, verify_ping: bool = False) -> List[NetworkAdapter]:
         """
-        Returns adapters that are suitable for multi-link bonding:
+        Returns adapters strictly suitable for internet link bonding:
         - Must be Up
         - Must have a valid non-loopback/APIPA IPv4 address
-        - Not marked as purely internal virtual host adapter
-        - Has a Default Gateway (crucial for internet routing) OR passes reachability probe
+        - Must NOT be a virtual host-only adapter (e.g. VirtualBox)
+        - MUST have a valid IPv4 Default Gateway (proof of upstream internet routing)
         """
         all_adapters = self.get_adapters(force_refresh=True)
 
-        candidates = []
+        verified = []
         for a in all_adapters:
             if a.status.lower() != "up":
                 continue
@@ -131,80 +131,22 @@ class AdapterManager:
                 continue
             if a.adapter_type == "virtual":
                 continue
-            candidates.append(a)
-
-        if not candidates:
-            # Fallback in case cellular or ethernet was tagged as virtual
-            for a in all_adapters:
-                if a.status.lower() == "up" and a.ipv4 and not a.ipv4.startswith("127.") and not a.ipv4.startswith("169.254."):
-                    candidates.append(a)
-
-        verified = []
-        for a in candidates:
-            # If the adapter has a valid IPv4 Default Gateway, it is a real upstream internet interface!
-            if a.gateway and not a.gateway.startswith("0.0.0.0"):
-                a.is_internet_ready = True
-                verified.append(a)
+            # A valid upstream default gateway is mandatory for internet routing!
+            if not a.gateway or a.gateway.startswith("0.0.0.0") or a.gateway.startswith("127."):
                 continue
 
-            # Otherwise, run reachability probe across multiple endpoints
-            if verify_ping:
-                if self.test_adapter_reachability(a):
-                    a.is_internet_ready = True
-                    verified.append(a)
-                else:
-                    a.is_internet_ready = False
-                    logger.warning("Adapter %s (%s) failed internet reachability probe", a.name, a.ipv4)
-            else:
-                a.is_internet_ready = True
-                verified.append(a)
+            a.is_internet_ready = True
+            verified.append(a)
+
+        # Fallback if no gateway found on strange tether configurations
+        if not verified:
+            for a in all_adapters:
+                if a.status.lower() == "up" and a.ipv4 and not a.ipv4.startswith("127.") and not a.ipv4.startswith("169.254."):
+                    if a.adapter_type != "virtual":
+                        a.is_internet_ready = True
+                        verified.append(a)
 
         return verified
-
-    def test_adapter_reachability(self, adapter: NetworkAdapter, timeout: float = 3.5) -> bool:
-        """Tests outbound reachability through this specific hardware interface."""
-        # Try multiple trusted endpoints: DNS 8.8.8.8:53, Cloudflare 1.1.1.1:443, Google 8.8.4.4:53
-        test_targets = [
-            ("8.8.8.8", 53),
-            ("1.1.1.1", 443),
-            ("208.67.222.222", 53),
-        ]
-
-        for host, port in test_targets:
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(timeout)
-
-                if sys.platform == "win32":
-                    IP_UNICAST_IF = 31
-                    s.setsockopt(socket.IPPROTO_IP, IP_UNICAST_IF, struct.pack("!I", adapter.if_index))
-                    if adapter.ipv4:
-                        try:
-                            s.bind((adapter.ipv4, 0))
-                        except Exception:
-                            pass
-                elif sys.platform.startswith("linux"):
-                    SO_BINDTODEVICE = 25
-                    try:
-                        s.setsockopt(socket.SOL_SOCKET, SO_BINDTODEVICE, adapter.name.encode() + b"\0")
-                    except Exception:
-                        if adapter.ipv4:
-                            s.bind((adapter.ipv4, 0))
-                elif sys.platform == "darwin":
-                    IP_BOUND_IF = 25
-                    try:
-                        s.setsockopt(socket.IPPROTO_IP, IP_BOUND_IF, struct.pack("!I", adapter.if_index))
-                    except Exception:
-                        if adapter.ipv4:
-                            s.bind((adapter.ipv4, 0))
-
-                s.connect((host, port))
-                s.close()
-                return True
-            except Exception as e:
-                logger.debug("Probe failed on %s to %s:%d: %s", adapter.name, host, port, e)
-
-        return False
 
     def _discover_windows(self) -> List[NetworkAdapter]:
         adapters: List[NetworkAdapter] = []
@@ -212,17 +154,17 @@ class AdapterManager:
             "$ErrorActionPreference = 'SilentlyContinue'; "
             "$netAdapters = @{}; "
             "Get-NetAdapter | ForEach-Object { "
-            "  $netAdapters[$_.ifIndex] = @{ "
+            "  $netAdapters[\"$($_.ifIndex)\"] = @{ "
             "    Name = $_.Name; "
             "    InterfaceDescription = $_.InterfaceDescription; "
             "    Status = $_.Status; "
             "    LinkSpeed = $_.LinkSpeed; "
-            "    InterfaceIndex = $_.ifIndex "
+            "    InterfaceIndex = [int]$_.ifIndex "
             "  } "
             "}; "
             "$ipConfigs = Get-NetIPConfiguration | ForEach-Object { "
-            "  $idx = $_.InterfaceIndex; "
-            "  $na = $netAdapters[$idx]; "
+            "  $idxStr = \"$($_.InterfaceIndex)\"; "
+            "  $na = $netAdapters[$idxStr]; "
             "  $ipv4 = ($_.IPv4Address | Where-Object { $_.IPAddress -notlike '169.254*' -and $_.IPAddress -notlike '127*' } | Select-Object -First 1).IPAddress; "
             "  $ipv6 = ($_.IPv6Address | Select-Object -First 1).IPAddress; "
             "  $gw = ($_.IPv4DefaultGateway | Select-Object -First 1).NextHop; "
@@ -231,7 +173,7 @@ class AdapterManager:
             "    Description = if ($na) { $na.InterfaceDescription } else { '' }; "
             "    Status = if ($na) { $na.Status } else { 'Up' }; "
             "    LinkSpeed = if ($na) { $na.LinkSpeed } else { '' }; "
-            "    InterfaceIndex = $idx; "
+            "    InterfaceIndex = [int]$_.InterfaceIndex; "
             "    IPv4 = $ipv4; "
             "    IPv6 = $ipv6; "
             "    Gateway = $gw "
@@ -276,7 +218,7 @@ class AdapterManager:
                         status=status,
                         adapter_type=atype,
                         link_speed=speed_bps,
-                        is_internet_ready=bool(gw and ipv4),
+                        is_internet_ready=bool(gw and ipv4 and atype != "virtual"),
                     )
                     adapters.append(adapter)
         except Exception as e:
@@ -331,7 +273,7 @@ class AdapterManager:
                     ipv6=ipv6,
                     status=status,
                     adapter_type=atype,
-                    is_internet_ready=bool(ipv4 and not ipv4.startswith("127.")),
+                    is_internet_ready=bool(ipv4 and not ipv4.startswith("127.") and atype != "virtual"),
                 )
                 adapters.append(adapter)
         except Exception as e:
@@ -352,7 +294,7 @@ class AdapterManager:
                         if_index=idx,
                         adapter_type=atype,
                         status="Up",
-                        is_internet_ready=True,
+                        is_internet_ready=(atype != "virtual"),
                     )
                     adapters.append(adapter)
         except Exception as e:

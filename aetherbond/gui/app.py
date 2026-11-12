@@ -5,6 +5,8 @@ Engineered strictly following ui-ux-pro-max guidelines:
 - Minimum 44px touch & interaction targets
 - Non-blocking asynchronous threading with thread-safe UI scheduling
 - Real-time canvas telemetry waveform and per-NIC speed gauges
+- Persistent stacked views: zero widget destruction, zero TclError
+- Automatic hardware hot-plug detection for Phone USB Tethering & Ethernet
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ class AetherBondNativeApp(ctk.CTk):
         super().__init__()
 
         self.title("AetherBond — Multi-WAN Dual-Link Aggregator")
-        self.geometry("1100x720")
+        self.geometry("1120x740")
         self.minsize(980, 640)
         self.configure(fg_color=COLOR_BG_PRIMARY)
 
@@ -77,7 +79,12 @@ class AetherBondNativeApp(ctk.CTk):
         self.adapter_checkboxes: Dict[str, ctk.CTkCheckBox] = {}
         self.known_adapters: List[NetworkAdapter] = []
 
+        # Persistent View Registry
+        self.views: Dict[str, ctk.CTkFrame] = {}
+        self.nav_buttons: Dict[str, ctk.CTkButton] = {}
+
         self._setup_ui()
+        self._initial_adapter_scan()
         self._start_background_polling()
 
     def _load_icon(self):
@@ -89,7 +96,7 @@ class AetherBondNativeApp(ctk.CTk):
             pass
 
     def _setup_ui(self):
-        # Master grid: Left Sidebar (220px) | Main Area (dynamic)
+        # Master grid: Left Sidebar (240px) | Main Area (dynamic)
         self.grid_columnconfigure(0, weight=0, minsize=240)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -113,24 +120,24 @@ class AetherBondNativeApp(ctk.CTk):
 
         sub_label = ctk.CTkLabel(
             brand_frame,
-            text="Dual-Link Bonding Engine",
+            text="Dual-Link Aggregation Engine",
             font=ctk.CTkFont(family="Segoe UI", size=12),
             text_color=COLOR_TEXT_MUTED,
         )
         sub_label.pack(anchor="w")
 
         # Sidebar Buttons
-        self.btn_nav_dash = self._create_sidebar_btn("⚡ Turbo Downloader", self._show_dash_view)
-        self.btn_nav_dash.pack(fill="x", padx=14, pady=6)
+        self.nav_buttons["dash"] = self._create_sidebar_btn("⚡ Turbo Downloader", lambda: self._show_tab("dash"))
+        self.nav_buttons["dash"].pack(fill="x", padx=14, pady=6)
 
-        self.btn_nav_adapters = self._create_sidebar_btn("🔌 Network Adapters", self._show_adapters_view)
-        self.btn_nav_adapters.pack(fill="x", padx=14, pady=6)
+        self.nav_buttons["adapters"] = self._create_sidebar_btn("🔌 Network Adapters", lambda: self._show_tab("adapters"))
+        self.nav_buttons["adapters"].pack(fill="x", padx=14, pady=6)
 
-        self.btn_nav_proxy = self._create_sidebar_btn("🌐 Multi-WAN Proxy", self._show_proxy_view)
-        self.btn_nav_proxy.pack(fill="x", padx=14, pady=6)
+        self.nav_buttons["proxy"] = self._create_sidebar_btn("🌐 Multi-WAN Proxy", lambda: self._show_tab("proxy"))
+        self.nav_buttons["proxy"].pack(fill="x", padx=14, pady=6)
 
-        self.btn_nav_doctor = self._create_sidebar_btn("🩺 Network Doctor", self._show_doctor_view)
-        self.btn_nav_doctor.pack(fill="x", padx=14, pady=6)
+        self.nav_buttons["doctor"] = self._create_sidebar_btn("🩺 Network Doctor", lambda: self._show_tab("doctor"))
+        self.nav_buttons["doctor"].pack(fill="x", padx=14, pady=6)
 
         # Bottom System Health Status Pill
         self.health_frame = ctk.CTkFrame(self.sidebar, fg_color=COLOR_BG_CARD, corner_radius=10)
@@ -146,8 +153,8 @@ class AetherBondNativeApp(ctk.CTk):
 
         self.lbl_status_text = ctk.CTkLabel(
             self.health_frame,
-            text="ONLINE & BONDED",
-            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            text="INITIALIZING INTERFACES...",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
             text_color=COLOR_TEXT_PRIMARY,
         )
         self.lbl_status_text.pack(side="left", padx=0, pady=10)
@@ -164,14 +171,20 @@ class AetherBondNativeApp(ctk.CTk):
         # 2. Live Canvas Waveform Chart
         self._build_waveform_section()
 
-        # 3. Dynamic Views Container
+        # 3. Dynamic Views Container (Stacked Frames — Zero Destruction!)
         self.content_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
         self.content_frame.grid(row=2, column=0, sticky="nsew", pady=(16, 0))
         self.content_frame.grid_columnconfigure(0, weight=1)
         self.content_frame.grid_rowconfigure(0, weight=1)
 
-        # Initial View: Turbo Downloader
-        self._show_dash_view()
+        # Build all 4 views once in memory
+        self._build_dash_view()
+        self._build_adapters_view()
+        self._build_proxy_view()
+        self._build_doctor_view()
+
+        # Display Initial View
+        self._show_tab("dash")
 
     def _create_sidebar_btn(self, text: str, command):
         return ctk.CTkButton(
@@ -186,6 +199,20 @@ class AetherBondNativeApp(ctk.CTk):
             height=44,  # ui-ux-pro-max: min 44px touch/click target
             corner_radius=8,
         )
+
+    def _show_tab(self, tab_id: str):
+        """Switches views using persistent stacked frames. Never destroys active widgets."""
+        for name, view in self.views.items():
+            if name == tab_id:
+                view.grid(row=0, column=0, sticky="nsew")
+            else:
+                view.grid_remove()
+
+        for name, btn in self.nav_buttons.items():
+            if name == tab_id:
+                btn.configure(fg_color=COLOR_BG_ELEVATED, text_color=COLOR_ACCENT_CYAN)
+            else:
+                btn.configure(fg_color="transparent", text_color=COLOR_TEXT_PRIMARY)
 
     def _build_metrics_ribbon(self):
         ribbon = ctk.CTkFrame(self.main_container, fg_color="transparent")
@@ -203,11 +230,11 @@ class AetherBondNativeApp(ctk.CTk):
         )
         # Ethernet / Phone Card
         self.card_eth = self._create_metric_card(
-            ribbon, 2, "ETHERNET / PHONE", "0.0 MB/s", "Ethernet/USB Tether", COLOR_ACCENT_PURPLE
+            ribbon, 2, "ETHERNET / PHONE", "0.0 MB/s", "Phone USB / Ethernet", COLOR_ACCENT_PURPLE
         )
         # Proxy & Streams Card
         self.card_proxy = self._create_metric_card(
-            ribbon, 3, "MULTI-WAN PROXY", "SOCKS5: 1080", "HTTP: 8080 (Active)", COLOR_ACCENT_YELLOW
+            ribbon, 3, "MULTI-WAN PROXY", "SOCKS5: 1080", "HTTP: 8080 (Ready)", COLOR_ACCENT_YELLOW
         )
 
     def _create_metric_card(self, parent, col, title, initial_val, subtext, accent_color):
@@ -292,11 +319,9 @@ class AetherBondNativeApp(ctk.CTk):
         txt.pack(side="left", padx=(0, 6))
 
     # ----------------- VIEW 1: DASHBOARD / DOWNLOADER -----------------
-    def _show_dash_view(self):
-        self._clear_content()
-
+    def _build_dash_view(self):
         view = ctk.CTkFrame(self.content_frame, fg_color="transparent")
-        view.pack(fill="both", expand=True)
+        self.views["dash"] = view
 
         # Download input bar
         bar_card = ctk.CTkFrame(view, fg_color=COLOR_BG_CARD, corner_radius=12, border_width=1, border_color=COLOR_BORDER)
@@ -435,18 +460,16 @@ class AetherBondNativeApp(ctk.CTk):
         self.btn_cancel.pack(side="left")
 
     # ----------------- VIEW 2: ADAPTERS & HOT-PLUG -----------------
-    def _show_adapters_view(self):
-        self._clear_content()
-
+    def _build_adapters_view(self):
         view = ctk.CTkFrame(self.content_frame, fg_color=COLOR_BG_CARD, corner_radius=12, border_width=1, border_color=COLOR_BORDER)
-        view.pack(fill="both", expand=True, padx=0, pady=0)
+        self.views["adapters"] = view
 
         header = ctk.CTkFrame(view, fg_color="transparent")
         header.pack(fill="x", padx=20, pady=(16, 12))
 
         lbl = ctk.CTkLabel(
             header,
-            text="🔌 HARDWARE INTERFACES & HOT-PLUG DETECTOR",
+            text="🔌 HARDWARE INTERFACES & AUTO-BOND DETECTOR",
             font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
             text_color="#FFFFFF",
         )
@@ -464,7 +487,7 @@ class AetherBondNativeApp(ctk.CTk):
 
         desc = ctk.CTkLabel(
             view,
-            text="Check the adapters you want AetherBond to bond together. USB Tethered phones appear automatically as Ethernet/Cellular.",
+            text="Select the network interfaces you want AetherBond to bond. Wi-Fi and Phone USB Tethering (Ethernet) are auto-checked.",
             font=ctk.CTkFont(size=12),
             text_color=COLOR_TEXT_MUTED,
         )
@@ -473,59 +496,132 @@ class AetherBondNativeApp(ctk.CTk):
         self.adapters_scroll = ctk.CTkScrollableFrame(view, fg_color=COLOR_BG_PRIMARY, corner_radius=8)
         self.adapters_scroll.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
+    def _initial_adapter_scan(self):
+        """Discovers adapters on startup and renders UI."""
+        self.known_adapters = self.adapter_mgr.get_adapters(force_refresh=True)
         self._render_adapter_checkboxes()
+        self._update_system_health_status()
 
     def _render_adapter_checkboxes(self):
-        for widget in self.adapters_scroll.winfo_children():
-            widget.destroy()
+        """Renders interface cards inside the scrollable container."""
+        try:
+            if not hasattr(self, "adapters_scroll") or not self.adapters_scroll.winfo_exists():
+                return
 
-        self.adapter_checkboxes.clear()
-        self.known_adapters = self.adapter_mgr.get_adapters(force_refresh=True)
+            # Keep previous checked state if user customized it
+            prev_states = {k: chk.get() for k, chk in self.adapter_checkboxes.items()}
 
-        for a in self.known_adapters:
-            row = ctk.CTkFrame(self.adapters_scroll, fg_color=COLOR_BG_CARD, corner_radius=8, height=54)
-            row.pack(fill="x", pady=4, padx=4)
+            for widget in self.adapters_scroll.winfo_children():
+                widget.destroy()
 
-            # Checkbox: default checked if internet ready or Up
-            chk_var = tk.BooleanVar(value=(a.is_internet_ready or (a.status.lower() == "up" and a.adapter_type != "virtual")))
-            chk = ctk.CTkCheckBox(
-                row,
-                text=f"{a.name}  (ifIndex {a.if_index})",
-                variable=chk_var,
-                font=ctk.CTkFont(size=13, weight="bold"),
-                checkbox_height=20,
-                checkbox_width=20,
-            )
-            chk.pack(side="left", padx=16, pady=12)
-            self.adapter_checkboxes[a.name] = chk
+            self.adapter_checkboxes.clear()
 
-            # Badges
-            type_badge = ctk.CTkLabel(
-                row,
-                text=f"[{a.adapter_type.upper()}]",
-                font=ctk.CTkFont(size=11, weight="bold"),
-                text_color=COLOR_ACCENT_CYAN if a.adapter_type == "wifi" else (COLOR_ACCENT_PURPLE if a.adapter_type in ("ethernet", "cellular") else COLOR_TEXT_DIM),
-            )
-            type_badge.pack(side="left", padx=8)
+            for a in self.known_adapters:
+                row = ctk.CTkFrame(self.adapters_scroll, fg_color=COLOR_BG_CARD, corner_radius=8, height=54)
+                row.pack(fill="x", pady=4, padx=4)
 
-            meta = f"IP: {a.ipv4 or 'No IP'}  |  Gateway: {a.gateway or '--'}  |  Speed: {a.speed_display}"
-            lbl_meta = ctk.CTkLabel(row, text=meta, font=ctk.CTkFont(size=12), text_color=COLOR_TEXT_MUTED)
-            lbl_meta.pack(side="left", padx=12)
+                # Auto-check if internet ready (valid gateway + IP + not virtual)
+                is_default_checked = a.is_internet_ready
+                if a.name in prev_states:
+                    is_default_checked = prev_states[a.name]
 
-            status_pill = ctk.CTkLabel(
-                row,
-                text=f"● {a.status}",
-                font=ctk.CTkFont(size=12, weight="bold"),
-                text_color=COLOR_ACCENT_GREEN if a.status.lower() == "up" else COLOR_ACCENT_RED,
-            )
-            status_pill.pack(side="right", padx=16)
+                chk_var = tk.BooleanVar(value=is_default_checked)
+                chk = ctk.CTkCheckBox(
+                    row,
+                    text=f"{a.name}  (ifIndex {a.if_index})",
+                    variable=chk_var,
+                    command=self._on_adapter_selection_changed,
+                    font=ctk.CTkFont(size=13, weight="bold"),
+                    checkbox_height=20,
+                    checkbox_width=20,
+                )
+                chk.pack(side="left", padx=16, pady=12)
+                self.adapter_checkboxes[a.name] = chk
+
+                # Badges
+                badge_color = COLOR_TEXT_DIM
+                if a.adapter_type == "wifi":
+                    badge_color = COLOR_ACCENT_CYAN
+                elif a.adapter_type in ("ethernet", "cellular"):
+                    badge_color = COLOR_ACCENT_PURPLE
+                elif a.adapter_type == "virtual":
+                    badge_color = COLOR_ACCENT_YELLOW
+
+                type_badge = ctk.CTkLabel(
+                    row,
+                    text=f"[{a.adapter_type.upper()}]",
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    text_color=badge_color,
+                )
+                type_badge.pack(side="left", padx=8)
+
+                desc_text = f" ({a.description[:35]}...)" if len(a.description) > 35 else (f" ({a.description})" if a.description else "")
+                meta = f"IP: {a.ipv4 or 'No IP'}  |  Gateway: {a.gateway or 'None'}  |  Speed: {a.speed_display}{desc_text}"
+                lbl_meta = ctk.CTkLabel(row, text=meta, font=ctk.CTkFont(size=12), text_color=COLOR_TEXT_MUTED)
+                lbl_meta.pack(side="left", padx=12)
+
+                status_text = f"● {a.status}"
+                if a.is_internet_ready:
+                    status_text += " (Bondable)"
+                status_color = COLOR_ACCENT_GREEN if a.is_internet_ready else (COLOR_ACCENT_YELLOW if a.status.lower() == "up" else COLOR_ACCENT_RED)
+
+                status_pill = ctk.CTkLabel(
+                    row,
+                    text=status_text,
+                    font=ctk.CTkFont(size=12, weight="bold"),
+                    text_color=status_color,
+                )
+                status_pill.pack(side="right", padx=16)
+
+        except Exception as e:
+            logger.debug("Suppressed checkbox rendering error: %s", e)
+
+    def _on_adapter_selection_changed(self):
+        self._update_system_health_status()
+
+    def _update_system_health_status(self):
+        """Updates health status pill and ribbon subtitle cards."""
+        try:
+            checked_adapters = [
+                a for a in self.known_adapters
+                if self.adapter_checkboxes.get(a.name) and self.adapter_checkboxes[a.name].get()
+            ]
+
+            count = len(checked_adapters)
+            if count >= 2:
+                names = " + ".join(a.name for a in checked_adapters[:2])
+                self.lbl_status_dot.configure(text_color=COLOR_ACCENT_GREEN)
+                self.lbl_status_text.configure(text=f"DUAL-BOND ACTIVE ({names})")
+                self.card_total["sub"].configure(text=f"Bonding {count} hardware NICs")
+            elif count == 1:
+                self.lbl_status_dot.configure(text_color=COLOR_ACCENT_CYAN)
+                self.lbl_status_text.configure(text=f"SINGLE LINK ({checked_adapters[0].name})")
+                self.card_total["sub"].configure(text="1 hardware NIC active")
+            else:
+                self.lbl_status_dot.configure(text_color=COLOR_ACCENT_RED)
+                self.lbl_status_text.configure(text="NO INTERFACES SELECTED")
+                self.card_total["sub"].configure(text="Select NICs in Adapters tab")
+
+            # Check for phone tethering / ethernet
+            phone_or_eth = [a for a in checked_adapters if a.adapter_type in ("cellular", "ethernet")]
+            if phone_or_eth:
+                self.card_eth["sub"].configure(text=f"{phone_or_eth[0].name} (Ready & Bonded)")
+            else:
+                self.card_eth["sub"].configure(text="Phone / Ethernet (Standby)")
+
+            wifi = [a for a in checked_adapters if a.adapter_type == "wifi"]
+            if wifi:
+                self.card_wifi["sub"].configure(text=f"{wifi[0].name} (Ready & Bonded)")
+            else:
+                self.card_wifi["sub"].configure(text="Wi-Fi (Standby)")
+
+        except Exception as e:
+            logger.debug("Suppressed health status update error: %s", e)
 
     # ----------------- VIEW 3: PROXY -----------------
-    def _show_proxy_view(self):
-        self._clear_content()
-
+    def _build_proxy_view(self):
         view = ctk.CTkFrame(self.content_frame, fg_color=COLOR_BG_CARD, corner_radius=12, border_width=1, border_color=COLOR_BORDER)
-        view.pack(fill="both", expand=True)
+        self.views["proxy"] = view
 
         inner = ctk.CTkFrame(view, fg_color="transparent")
         inner.pack(fill="both", expand=True, padx=24, pady=24)
@@ -540,7 +636,7 @@ class AetherBondNativeApp(ctk.CTk):
 
         desc = ctk.CTkLabel(
             inner,
-            text="Route your entire browser, Steam, Epic Games, IDM, qBittorrent, or git traffic through AetherBond.\nOutbound connections are seamlessly balanced across Wi-Fi and Ethernet in parallel.",
+            text="Route your entire browser, Steam, Epic Games, IDM, qBittorrent, or git traffic through AetherBond.\nOutbound connections are seamlessly balanced across Wi-Fi and Ethernet/Phone in parallel.",
             font=ctk.CTkFont(size=13),
             text_color=COLOR_TEXT_MUTED,
             justify="left",
@@ -556,11 +652,11 @@ class AetherBondNativeApp(ctk.CTk):
 
         self.btn_toggle_proxy = ctk.CTkButton(
             ctrl_inner,
-            text="🚀 START MULTI-WAN PROXY TUNNEL" if not self.active_proxy else "🛑 STOP PROXY TUNNEL",
+            text="🚀 START MULTI-WAN PROXY TUNNEL",
             command=self._toggle_proxy_server,
             height=46,
-            fg_color=COLOR_ACCENT_GREEN if not self.active_proxy else COLOR_ACCENT_RED,
-            text_color="#000000" if not self.active_proxy else "#FFFFFF",
+            fg_color=COLOR_ACCENT_GREEN,
+            text_color="#000000",
             font=ctk.CTkFont(size=13, weight="bold"),
             corner_radius=10,
         )
@@ -589,11 +685,9 @@ class AetherBondNativeApp(ctk.CTk):
         self.lbl_proxy_active_conns.pack(anchor="w", padx=20, pady=12)
 
     # ----------------- VIEW 4: DOCTOR -----------------
-    def _show_doctor_view(self):
-        self._clear_content()
-
+    def _build_doctor_view(self):
         view = ctk.CTkFrame(self.content_frame, fg_color=COLOR_BG_CARD, corner_radius=12, border_width=1, border_color=COLOR_BORDER)
-        view.pack(fill="both", expand=True)
+        self.views["doctor"] = view
 
         inner = ctk.CTkFrame(view, fg_color="transparent")
         inner.pack(fill="both", expand=True, padx=24, pady=24)
@@ -653,10 +747,6 @@ class AetherBondNativeApp(ctk.CTk):
 
         self._run_doctor_diag()
 
-    def _clear_content(self):
-        for widget in self.content_frame.winfo_children():
-            widget.destroy()
-
     # ----------------- ACTIONS & ENGINE INTEGRATION -----------------
     def _start_download_from_gui(self):
         url = self.entry_url.get().strip()
@@ -678,7 +768,7 @@ class AetherBondNativeApp(ctk.CTk):
             selected = self.adapter_mgr.get_bondable_adapters(verify_ping=False)
 
         if not selected:
-            messagebox.showerror("No Adapters", "No active network adapters selected.")
+            messagebox.showerror("No Adapters", "No active network adapters selected or ready.")
             return
 
         self.btn_download.configure(state="disabled", text="⏳ Connecting Streams...")
@@ -704,30 +794,40 @@ class AetherBondNativeApp(ctk.CTk):
         threading.Thread(target=runner, daemon=True).start()
 
     def _update_download_progress_ui(self, st: DownloadStatus):
-        self.lbl_task_filename.configure(text=st.filename)
-        self.lbl_task_percent.configure(text=f"{st.progress_percent:.1f}%")
-        self.task_progressbar.set(st.progress_percent / 100.0)
+        try:
+            if not hasattr(self, "lbl_task_filename") or not self.lbl_task_filename.winfo_exists():
+                return
 
-        self.lbl_transferred.configure(
-            text=f"{format_bytes_size(st.downloaded_bytes)} / {format_bytes_size(st.total_bytes)}"
-        )
+            self.lbl_task_filename.configure(text=st.filename)
+            self.lbl_task_percent.configure(text=f"{st.progress_percent:.1f}%")
+            self.task_progressbar.set(st.progress_percent / 100.0)
 
-        eta_str = f"ETA: {int(st.eta_seconds)}s" if st.eta_seconds else "ETA: Calculating..."
-        self.lbl_eta.configure(text=eta_str)
+            self.lbl_transferred.configure(
+                text=f"{format_bytes_size(st.downloaded_bytes)} / {format_bytes_size(st.total_bytes)}"
+            )
 
-        # Update per-NIC breakdown
-        breakdown = "  |  ".join(
-            f"{name}: {format_bytes_speed(spd)}"
-            for name, spd in st.adapter_speeds.items()
-            if spd > 0
-        )
-        self.lbl_nic_contributions.configure(text=f"NIC Speeds: {breakdown or 'Distributing chunks...'}")
+            eta_str = f"ETA: {int(st.eta_seconds)}s" if st.eta_seconds else "ETA: Calculating..."
+            self.lbl_eta.configure(text=eta_str)
+
+            # Update per-NIC breakdown
+            breakdown = "  |  ".join(
+                f"{name}: {format_bytes_speed(spd)}"
+                for name, spd in st.adapter_speeds.items()
+                if spd > 0
+            )
+            self.lbl_nic_contributions.configure(text=f"NIC Speeds: {breakdown or 'Distributing chunks...'}")
+        except Exception as e:
+            logger.debug("Suppressed UI update error: %s", e)
 
     def _download_finished_callback(self, success: bool):
-        self.btn_download.configure(state="normal", text="⚡ START BONDED DOWNLOAD")
-        if success:
-            path = self.active_downloader.target_path if self.active_downloader else "Downloads"
-            messagebox.showinfo("Completed", f"File successfully downloaded with bonded throughput!\nSaved to: {path}")
+        try:
+            if hasattr(self, "btn_download") and self.btn_download.winfo_exists():
+                self.btn_download.configure(state="normal", text="⚡ START BONDED DOWNLOAD")
+            if success:
+                path = self.active_downloader.target_path if self.active_downloader else "Downloads"
+                messagebox.showinfo("Completed", f"File successfully downloaded with bonded throughput!\nSaved to: {path}")
+        except Exception:
+            pass
 
     def _toggle_pause_download(self):
         if not self.active_downloader:
@@ -748,41 +848,47 @@ class AetherBondNativeApp(ctk.CTk):
         if self.active_proxy and not self.active_proxy.stop_event.is_set():
             self.active_proxy.stop()
             self.active_proxy = None
-            if hasattr(self, "btn_toggle_proxy"):
+            if hasattr(self, "btn_toggle_proxy") and self.btn_toggle_proxy.winfo_exists():
                 self.btn_toggle_proxy.configure(
                     text="🚀 START MULTI-WAN PROXY TUNNEL", fg_color=COLOR_ACCENT_GREEN, text_color="#000000"
                 )
         else:
-            # Selected adapters
-            selected = [a for a in self.known_adapters if self.adapter_checkboxes.get(a.name) and self.adapter_checkboxes[a.name].get()]
+            selected = [
+                a for a in self.known_adapters
+                if self.adapter_checkboxes.get(a.name) and self.adapter_checkboxes[a.name].get()
+            ]
             self.active_proxy = MultiNicProxy(socks5_port=1080, http_port=8080, adapters=selected or None)
             threading.Thread(target=self.active_proxy.start, args=(False,), daemon=True).start()
-            if hasattr(self, "btn_toggle_proxy"):
+            if hasattr(self, "btn_toggle_proxy") and self.btn_toggle_proxy.winfo_exists():
                 self.btn_toggle_proxy.configure(
                     text="🛑 STOP PROXY TUNNEL", fg_color=COLOR_ACCENT_RED, text_color="#FFFFFF"
                 )
 
     def _run_doctor_diag(self):
-        diag = SystemOptimizer.diagnose()
-        lines = [
-            f"=== Windows & OS Network Diagnostics ===",
-            f"Platform: {diag['platform']}",
-            f"Dual-Bond Capability: {'✓ Optimal' if diag['can_dual_bond'] else '⚠ Policy Issues Detected'}\n",
-        ]
-        if diag["issues"]:
-            lines.append("Issues:")
-            for i in diag["issues"]:
-                lines.append(f" ✗ {i}")
-        else:
-            lines.append("✓ No policy conflicts detected. Windows Connection Manager permits simultaneous links.")
+        try:
+            diag = SystemOptimizer.diagnose()
+            lines = [
+                "=== Windows & OS Network Diagnostics ===",
+                f"Platform: {diag['platform']}",
+                f"Dual-Bond Capability: {'✓ Optimal' if diag['can_dual_bond'] else '⚠ Policy Issues Detected'}\n",
+            ]
+            if diag["issues"]:
+                lines.append("Issues:")
+                for i in diag["issues"]:
+                    lines.append(f" ✗ {i}")
+            else:
+                lines.append("✓ No policy conflicts detected. Windows Connection Manager permits simultaneous links.")
 
-        if diag["recommendations"]:
-            lines.append("\nRecommendations:")
-            for r in diag["recommendations"]:
-                lines.append(f" • {r}")
+            if diag["recommendations"]:
+                lines.append("\nRecommendations:")
+                for r in diag["recommendations"]:
+                    lines.append(f" • {r}")
 
-        self.doctor_result_box.delete("1.0", "end")
-        self.doctor_result_box.insert("1.0", "\n".join(lines))
+            if hasattr(self, "doctor_result_box") and self.doctor_result_box.winfo_exists():
+                self.doctor_result_box.delete("1.0", "end")
+                self.doctor_result_box.insert("1.0", "\n".join(lines))
+        except Exception as e:
+            logger.debug("Doctor diag error: %s", e)
 
     def _apply_doctor_fix(self):
         ok, msg = SystemOptimizer.apply_windows_dual_nic_fix()
@@ -793,85 +899,118 @@ class AetherBondNativeApp(ctk.CTk):
         self._run_doctor_diag()
 
     def _force_adapter_scan(self):
+        self.known_adapters = self.adapter_mgr.get_adapters(force_refresh=True)
         self._render_adapter_checkboxes()
+        self._update_system_health_status()
         messagebox.showinfo("Scanned", f"Detected {len(self.known_adapters)} hardware interfaces.")
 
-    # ----------------- BACKGROUND TELEMETRY LOOP -----------------
+    # ----------------- BACKGROUND TELEMETRY & HOT-PLUG -----------------
     def _start_background_polling(self):
         def loop():
+            tick_count = 0
             while True:
                 time.sleep(0.4)
+                tick_count += 1
                 self.after(0, self._telemetry_tick)
+
+                # Hot-plug scan every ~4 seconds (10 ticks)
+                if tick_count % 10 == 0:
+                    self.after(0, self._check_hotplug)
 
         threading.Thread(target=loop, daemon=True).start()
 
+    def _check_hotplug(self):
+        """Detects newly connected or disconnected interfaces (e.g. phone plugged via USB)."""
+        try:
+            current = self.adapter_mgr.get_adapters(force_refresh=True)
+            current_keys = {(a.name, a.status, a.ipv4) for a in current}
+            known_keys = {(a.name, a.status, a.ipv4) for a in self.known_adapters}
+
+            if current_keys != known_keys:
+                logger.info("Network topology change detected: updating UI adapters")
+                self.known_adapters = current
+                self._render_adapter_checkboxes()
+                self._update_system_health_status()
+        except Exception as e:
+            logger.debug("Suppressed hot-plug check error: %s", e)
+
     def _telemetry_tick(self):
-        total_spd = 0.0
-        wifi_spd = 0.0
-        eth_spd = 0.0
+        try:
+            total_spd = 0.0
+            wifi_spd = 0.0
+            eth_spd = 0.0
 
-        if self.active_downloader:
-            total_spd += self.active_downloader.speed_tracker.get_total_speed()
-            snap = self.active_downloader.speed_tracker.snapshot()
-            for name, m in snap.items():
-                lname = name.lower()
-                if any(k in lname for k in ["wi-fi", "wifi", "wlan"]):
-                    wifi_spd += m.current_speed
-                else:
-                    eth_spd += m.current_speed
+            if self.active_downloader:
+                total_spd += self.active_downloader.speed_tracker.get_total_speed()
+                snap = self.active_downloader.speed_tracker.snapshot()
+                for name, m in snap.items():
+                    lname = name.lower()
+                    if any(k in lname for k in ["wi-fi", "wifi", "wlan"]):
+                        wifi_spd += m.current_speed
+                    else:
+                        eth_spd += m.current_speed
 
-        if self.active_proxy:
-            total_spd += self.active_proxy.speed_tracker.get_total_speed()
-            snap = self.active_proxy.speed_tracker.snapshot()
-            for name, m in snap.items():
-                lname = name.lower()
-                if any(k in lname for k in ["wi-fi", "wifi", "wlan"]):
-                    wifi_spd += m.current_speed
-                else:
-                    eth_spd += m.current_speed
+            if self.active_proxy:
+                total_spd += self.active_proxy.speed_tracker.get_total_speed()
+                snap = self.active_proxy.speed_tracker.snapshot()
+                for name, m in snap.items():
+                    lname = name.lower()
+                    if any(k in lname for k in ["wi-fi", "wifi", "wlan"]):
+                        wifi_spd += m.current_speed
+                    else:
+                        eth_spd += m.current_speed
 
-            if hasattr(self, "lbl_proxy_active_conns"):
-                self.lbl_proxy_active_conns.configure(
-                    text=f"Active Proxy Tunnels: {self.active_proxy.active_connections}  |  Speed: {format_bytes_speed(self.active_proxy.speed_tracker.get_total_speed())}"
-                )
+                if hasattr(self, "lbl_proxy_active_conns") and self.lbl_proxy_active_conns.winfo_exists():
+                    self.lbl_proxy_active_conns.configure(
+                        text=f"Active Proxy Tunnels: {self.active_proxy.active_connections}  |  Speed: {format_bytes_speed(self.active_proxy.speed_tracker.get_total_speed())}"
+                    )
 
-        # Update Top Cards
-        self.card_total["val"].configure(text=format_bytes_speed(total_spd))
-        self.card_wifi["val"].configure(text=format_bytes_speed(wifi_spd))
-        self.card_eth["val"].configure(text=format_bytes_speed(eth_spd))
+            # Update Top Cards
+            if hasattr(self, "card_total") and self.card_total["val"].winfo_exists():
+                self.card_total["val"].configure(text=format_bytes_speed(total_spd))
+                self.card_wifi["val"].configure(text=format_bytes_speed(wifi_spd))
+                self.card_eth["val"].configure(text=format_bytes_speed(eth_spd))
 
-        # Update History & Draw Waveform
-        self.history_total.append(total_spd)
-        self.history_wifi.append(wifi_spd)
-        self.history_eth.append(eth_spd)
+            # Update History & Draw Waveform
+            self.history_total.append(total_spd)
+            self.history_wifi.append(wifi_spd)
+            self.history_eth.append(eth_spd)
 
-        self._draw_canvas_waveform()
+            self._draw_canvas_waveform()
+        except Exception:
+            pass
 
     def _draw_canvas_waveform(self):
-        c = self.chart_canvas
-        w = c.winfo_width() or self.canvas_w
-        h = c.winfo_height() or self.canvas_h
-        c.delete("all")
+        try:
+            if not hasattr(self, "chart_canvas") or not self.chart_canvas.winfo_exists():
+                return
 
-        # Grid lines
-        for y in range(0, h, 25):
-            c.create_line(0, y, w, y, fill="#1B2230", width=1)
+            c = self.chart_canvas
+            w = c.winfo_width() or self.canvas_w
+            h = c.winfo_height() or self.canvas_h
+            c.delete("all")
 
-        max_val = max(max(self.history_total), max(self.history_wifi), max(self.history_eth), 1024 * 1024 * 5) * 1.15
+            # Grid lines
+            for y in range(0, h, 25):
+                c.create_line(0, y, w, y, fill="#1B2230", width=1)
 
-        def plot_points(data_seq, color):
-            pts = []
-            step = w / (len(data_seq) - 1)
-            for i, val in enumerate(data_seq):
-                x = i * step
-                y = h - (val / max_val) * (h - 8)
-                pts.extend([x, y])
-            if len(pts) >= 4:
-                c.create_line(*pts, fill=color, width=2.5, smooth=True)
+            max_val = max(max(self.history_total), max(self.history_wifi), max(self.history_eth), 1024 * 1024 * 5) * 1.15
 
-        plot_points(self.history_wifi, COLOR_ACCENT_CYAN)
-        plot_points(self.history_eth, COLOR_ACCENT_PURPLE)
-        plot_points(self.history_total, COLOR_ACCENT_GREEN)
+            def plot_points(data_seq, color):
+                pts = []
+                step = w / (len(data_seq) - 1)
+                for i, val in enumerate(data_seq):
+                    x = i * step
+                    y = h - (val / max_val) * (h - 8)
+                    pts.extend([x, y])
+                if len(pts) >= 4:
+                    c.create_line(*pts, fill=color, width=2.5, smooth=True)
+
+            plot_points(self.history_wifi, COLOR_ACCENT_CYAN)
+            plot_points(self.history_eth, COLOR_ACCENT_PURPLE)
+            plot_points(self.history_total, COLOR_ACCENT_GREEN)
+        except Exception:
+            pass
 
 
 def launch_native_gui():
