@@ -4,13 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aetherbond"
-version = "2.0.0"
+version = "2.1.0"
 authors = [
   { name = "SHAURYASANYAL3", email = "shauryasanyal@gmail.com" },
 ]
 description = "High-Speed Multi-WAN Link Aggregation & Dual-NIC Bonding Engine (Wi-Fi + Ethernet)"
 readme = "README.md"
 requires-python = ">=3.9"
+dependencies = [
+    "customtkinter>=6.0.0",
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",

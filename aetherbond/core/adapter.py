@@ -1,7 +1,7 @@
 """
 Network Adapter Discovery and Health Management
 Handles cross-platform physical/virtual NIC enumeration, interface index resolution,
-and hardware-level connectivity validation.
+phone USB tethering (RNDIS/Apple), and hardware-level connectivity validation.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ class NetworkAdapter:
             return f"{self.link_speed / 1_000_000:.0f} Mbps"
         elif self.link_speed > 0:
             return f"{self.link_speed / 1_000:.0f} Kbps"
-        return "N/A"
+        return "Active"
 
     def to_dict(self) -> dict:
         return {
@@ -63,14 +63,29 @@ class NetworkAdapter:
 
 def classify_adapter_type(name: str, desc: str) -> str:
     combined = f"{name} {desc}".lower()
-    if any(k in combined for k in ["virtualbox", "vmware", "hyper-v", "wsl", "veth", "docker", "loopback", "tap", "vpn", "tailscale", "zerotier"]):
+
+    # Explicit Phone USB Tethering & Cellular Devices (DO NOT mark as virtual!)
+    if any(k in combined for k in [
+        "rndis", "remote ndis", "tether", "cellular", "mobile", "apple mobile",
+        "samsung mobile", "android", "lte", "5g", "wwan", "modem"
+    ]):
+        return "cellular"
+
+    # Known Virtual Host-Only / VPN / Container Adapters
+    if any(k in combined for k in [
+        "virtualbox host-only", "vmware", "hyper-v", "wsl", "veth", "docker",
+        "loopback", "tailscale", "zerotier", "wireguard", "tap-windows"
+    ]):
         return "virtual"
+
+    # Wi-Fi / Wireless Adapters
     if any(k in combined for k in ["wi-fi", "wifi", "wlan", "wireless", "802.11"]):
         return "wifi"
+
+    # Standard Ethernet / LAN Adapters
     if any(k in combined for k in ["ethernet", "eth", "realtek", "intel(r) ethernet", "gigabit", "lan"]):
         return "ethernet"
-    if any(k in combined for k in ["cellular", "mobile", "lte", "5g", "wwan", "modem"]):
-        return "cellular"
+
     return "unknown"
 
 
@@ -79,8 +94,9 @@ class AdapterManager:
 
     def __init__(self):
         self._cached_adapters: List[NetworkAdapter] = []
+        self._last_topology_hash: str = ""
 
-    def get_adapters(self, force_refresh: bool = False) -> List[NetworkAdapter]:
+    def get_adapters(self, force_refresh: bool = True) -> List[NetworkAdapter]:
         if self._cached_adapters and not force_refresh:
             return self._cached_adapters
 
@@ -102,80 +118,96 @@ class AdapterManager:
         Returns adapters that are suitable for multi-link bonding:
         - Must be Up
         - Must have a valid non-loopback/APIPA IPv4 address
-        - Not marked as purely internal virtual host adapter (unless requested)
-        - Must pass socket reachability probe if verify_ping is True
+        - Not marked as purely internal virtual host adapter
+        - Has a Default Gateway (crucial for internet routing) OR passes reachability probe
         """
         all_adapters = self.get_adapters(force_refresh=True)
-        candidates = [
-            a for a in all_adapters
-            if a.status.lower() == "up"
-            and a.ipv4
-            and not a.ipv4.startswith("127.")
-            and not a.ipv4.startswith("169.254.")
-            and a.adapter_type != "virtual"
-        ]
+
+        candidates = []
+        for a in all_adapters:
+            if a.status.lower() != "up":
+                continue
+            if not a.ipv4 or a.ipv4.startswith("127.") or a.ipv4.startswith("169.254."):
+                continue
+            if a.adapter_type == "virtual":
+                continue
+            candidates.append(a)
 
         if not candidates:
-            # Fallback: maybe the user is using a USB tethered connection that classified as virtual or unknown
-            candidates = [
-                a for a in all_adapters
-                if a.status.lower() == "up" and a.ipv4 and not a.ipv4.startswith("127.") and not a.ipv4.startswith("169.254.")
-            ]
-
-        if not verify_ping:
-            return candidates
+            # Fallback in case cellular or ethernet was tagged as virtual
+            for a in all_adapters:
+                if a.status.lower() == "up" and a.ipv4 and not a.ipv4.startswith("127.") and not a.ipv4.startswith("169.254."):
+                    candidates.append(a)
 
         verified = []
         for a in candidates:
-            if self.test_adapter_reachability(a):
+            # If the adapter has a valid IPv4 Default Gateway, it is a real upstream internet interface!
+            if a.gateway and not a.gateway.startswith("0.0.0.0"):
                 a.is_internet_ready = True
                 verified.append(a)
+                continue
+
+            # Otherwise, run reachability probe across multiple endpoints
+            if verify_ping:
+                if self.test_adapter_reachability(a):
+                    a.is_internet_ready = True
+                    verified.append(a)
+                else:
+                    a.is_internet_ready = False
+                    logger.warning("Adapter %s (%s) failed internet reachability probe", a.name, a.ipv4)
             else:
-                a.is_internet_ready = False
-                logger.warning("Adapter %s (%s) failed internet reachability probe", a.name, a.ipv4)
+                a.is_internet_ready = True
+                verified.append(a)
 
         return verified
 
-    def test_adapter_reachability(self, adapter: NetworkAdapter, host: str = "1.1.1.1", port: int = 80, timeout: float = 2.5) -> bool:
-        """Tests whether an outbound connection can actually be made through this specific interface."""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(timeout)
+    def test_adapter_reachability(self, adapter: NetworkAdapter, timeout: float = 3.5) -> bool:
+        """Tests outbound reachability through this specific hardware interface."""
+        # Try multiple trusted endpoints: DNS 8.8.8.8:53, Cloudflare 1.1.1.1:443, Google 8.8.4.4:53
+        test_targets = [
+            ("8.8.8.8", 53),
+            ("1.1.1.1", 443),
+            ("208.67.222.222", 53),
+        ]
 
-            # Apply interface-specific routing
-            if sys.platform == "win32":
-                IP_UNICAST_IF = 31
-                s.setsockopt(socket.IPPROTO_IP, IP_UNICAST_IF, struct.pack("!I", adapter.if_index))
-                if adapter.ipv4:
-                    s.bind((adapter.ipv4, 0))
-            elif sys.platform.startswith("linux"):
-                SO_BINDTODEVICE = 25
-                try:
-                    s.setsockopt(socket.SOL_SOCKET, SO_BINDTODEVICE, adapter.name.encode() + b"\0")
-                except PermissionError:
-                    if adapter.ipv4:
-                        s.bind((adapter.ipv4, 0))
-            elif sys.platform == "darwin":
-                IP_BOUND_IF = 25
-                try:
-                    s.setsockopt(socket.IPPROTO_IP, IP_BOUND_IF, struct.pack("!I", adapter.if_index))
-                except Exception:
-                    if adapter.ipv4:
-                        s.bind((adapter.ipv4, 0))
-            else:
-                if adapter.ipv4:
-                    s.bind((adapter.ipv4, 0))
+        for host, port in test_targets:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(timeout)
 
-            s.connect((host, port))
-            s.close()
-            return True
-        except Exception as e:
-            logger.debug("Reachability check failed for adapter %s: %s", adapter.name, e)
-            return False
+                if sys.platform == "win32":
+                    IP_UNICAST_IF = 31
+                    s.setsockopt(socket.IPPROTO_IP, IP_UNICAST_IF, struct.pack("!I", adapter.if_index))
+                    if adapter.ipv4:
+                        try:
+                            s.bind((adapter.ipv4, 0))
+                        except Exception:
+                            pass
+                elif sys.platform.startswith("linux"):
+                    SO_BINDTODEVICE = 25
+                    try:
+                        s.setsockopt(socket.SOL_SOCKET, SO_BINDTODEVICE, adapter.name.encode() + b"\0")
+                    except Exception:
+                        if adapter.ipv4:
+                            s.bind((adapter.ipv4, 0))
+                elif sys.platform == "darwin":
+                    IP_BOUND_IF = 25
+                    try:
+                        s.setsockopt(socket.IPPROTO_IP, IP_BOUND_IF, struct.pack("!I", adapter.if_index))
+                    except Exception:
+                        if adapter.ipv4:
+                            s.bind((adapter.ipv4, 0))
+
+                s.connect((host, port))
+                s.close()
+                return True
+            except Exception as e:
+                logger.debug("Probe failed on %s to %s:%d: %s", adapter.name, host, port, e)
+
+        return False
 
     def _discover_windows(self) -> List[NetworkAdapter]:
         adapters: List[NetworkAdapter] = []
-        # Query PowerShell for structured network adapter and IP configuration
         ps_cmd = (
             "$ErrorActionPreference = 'SilentlyContinue'; "
             "$netAdapters = @{}; "
@@ -191,7 +223,7 @@ class AdapterManager:
             "$ipConfigs = Get-NetIPConfiguration | ForEach-Object { "
             "  $idx = $_.InterfaceIndex; "
             "  $na = $netAdapters[$idx]; "
-            "  $ipv4 = ($_.IPv4Address | Select-Object -First 1).IPAddress; "
+            "  $ipv4 = ($_.IPv4Address | Where-Object { $_.IPAddress -notlike '169.254*' -and $_.IPAddress -notlike '127*' } | Select-Object -First 1).IPAddress; "
             "  $ipv6 = ($_.IPv6Address | Select-Object -First 1).IPAddress; "
             "  $gw = ($_.IPv4DefaultGateway | Select-Object -First 1).NextHop; "
             "  [PSCustomObject]@{ "
@@ -213,11 +245,10 @@ class AdapterManager:
                 ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=8,
             )
             raw = res.stdout.strip()
             if raw:
-                # Can be a single object or an array
                 data = json.loads(raw)
                 if isinstance(data, dict):
                     data = [data]
@@ -230,8 +261,6 @@ class AdapterManager:
                     ipv4 = item.get("IPv4")
                     ipv6 = item.get("IPv6")
                     gw = item.get("Gateway")
-
-                    # Parse speed string like "433.3 Mbps" or "1 Gbps"
                     raw_speed = str(item.get("LinkSpeed") or "")
                     speed_bps = self._parse_speed_string(raw_speed)
 
@@ -247,6 +276,7 @@ class AdapterManager:
                         status=status,
                         adapter_type=atype,
                         link_speed=speed_bps,
+                        is_internet_ready=bool(gw and ipv4),
                     )
                     adapters.append(adapter)
         except Exception as e:
@@ -301,6 +331,7 @@ class AdapterManager:
                     ipv6=ipv6,
                     status=status,
                     adapter_type=atype,
+                    is_internet_ready=bool(ipv4 and not ipv4.startswith("127.")),
                 )
                 adapters.append(adapter)
         except Exception as e:
@@ -312,33 +343,16 @@ class AdapterManager:
     def _discover_macos(self) -> List[NetworkAdapter]:
         adapters: List[NetworkAdapter] = []
         try:
-            res = subprocess.run(["networksetup", "-listallhardwareports"], capture_output=True, text=True, timeout=5)
-            # Parse Hardware Port, Device
-            lines = res.stdout.splitlines()
-            current_port = ""
-            current_dev = ""
-            device_map = {}
-            for line in lines:
-                if line.startswith("Hardware Port:"):
-                    current_port = line.split(":", 1)[1].strip()
-                elif line.startswith("Device:"):
-                    current_dev = line.split(":", 1)[1].strip()
-                    if current_port and current_dev:
-                        device_map[current_dev] = current_port
-                        current_port = ""
-                        current_dev = ""
-
-            # Use socket.if_nameindex to find indexes
             if hasattr(socket, "if_nameindex"):
                 for idx, name in socket.if_nameindex():
-                    port_name = device_map.get(name, name)
-                    atype = classify_adapter_type(port_name, name)
+                    atype = classify_adapter_type(name, "")
                     adapter = NetworkAdapter(
                         name=name,
-                        description=port_name,
+                        description=name,
                         if_index=idx,
                         adapter_type=atype,
                         status="Up",
+                        is_internet_ready=True,
                     )
                     adapters.append(adapter)
         except Exception as e:
@@ -348,7 +362,6 @@ class AdapterManager:
         return adapters
 
     def _discover_fallback(self) -> List[NetworkAdapter]:
-        """Portable fallback using standard library socket methods."""
         adapters = []
         try:
             hostname = socket.gethostname()
@@ -361,12 +374,13 @@ class AdapterManager:
                     seen_ips.add(ip)
                     adapters.append(
                         NetworkAdapter(
-                            name=f"nic_{idx}",
+                            name=f"interface_{idx}",
                             description="Network Interface",
                             if_index=idx,
                             ipv4=ip,
                             status="Up",
                             adapter_type="ethernet",
+                            is_internet_ready=True,
                         )
                     )
                     idx += 1

@@ -24,6 +24,7 @@ from aetherbond.core.adapter import AdapterManager
 from aetherbond.core.downloader import DownloadStatus, TurboDownloader
 from aetherbond.core.optimizer import SystemOptimizer
 from aetherbond.core.proxy import MultiNicProxy
+from aetherbond.gui.app import launch_native_gui
 from aetherbond.utils.formatting import format_bytes_size, format_bytes_speed, render_progress_bar
 from aetherbond.utils.logger import BOLD, CYAN, GREEN, MAGENTA, RED, RESET, YELLOW, setup_logger
 from aetherbond.web.server import run_web_dashboard
@@ -227,47 +228,18 @@ def main():
     p_doc = subparsers.add_parser("doctor", help="Diagnose and optimize Windows dual-NIC routing")
     p_doc.add_argument("--fix", action="store_true", help="Automatically apply registry optimization")
 
+    # gui
+    subparsers.add_parser("gui", help="Launch the native Cyber-Obsidian Desktop GUI Application")
+
     # web
-    p_web = subparsers.add_parser("web", help="Start the real-time Cyber-Glassmorphic Web UI")
+    p_web = subparsers.add_parser("web", help="Start the headless Web UI server")
     p_web.add_argument("-p", "--port", type=int, default=8765, help="Web server port (default: 8765)")
 
     args = parser.parse_args()
 
-    if not args.command:
-        # Default action when double-clicked in Windows Explorer or launched with no args:
-        # Automatically launch Web Dashboard, start background multi-NIC proxy, and open browser!
-        print_banner()
-        port = 8765
-        dash_url = f"http://127.0.0.1:{port}"
-
-        print(f"{GREEN}{BOLD}⚡ Launching AetherBond Interactive Dashboard & Link Engine...{RESET}")
-        print("-" * 80)
-        print(f" • {BOLD}Web Dashboard UI:{RESET}   {CYAN}{dash_url}{RESET} (Opening in default browser...)")
-        print(f" • {BOLD}Multi-WAN SOCKS5:{RESET}   {CYAN}127.0.0.1:1080{RESET}")
-        print(f" • {BOLD}Multi-WAN HTTP:{RESET}     {CYAN}127.0.0.1:8080{RESET}")
-        print("-" * 80)
-        print(f"{YELLOW}[Keep this window open while AetherBond is active. Press Ctrl+C to exit]{RESET}\n")
-
-        # Launch the proxy in the background
-        proxy = MultiNicProxy(socks5_port=1080, http_port=8080)
-        threading.Thread(target=proxy.start, args=(False,), daemon=True).start()
-
-        # Open web browser after a brief delay
-        def open_browser():
-            time.sleep(0.8)
-            import webbrowser
-            try:
-                webbrowser.open(dash_url)
-            except Exception:
-                pass
-
-        threading.Thread(target=open_browser, daemon=True).start()
-
-        # Run web dashboard (blocking)
-        try:
-            run_web_dashboard(port=port, blocking=True)
-        except KeyboardInterrupt:
-            print(f"\n{YELLOW}AetherBond stopped.{RESET}")
+    if not args.command or args.command == "gui":
+        # Launch real native Windows desktop application window!
+        launch_native_gui()
         sys.exit(0)
 
     dispatch = {
@@ -276,6 +248,7 @@ def main():
         "proxy": cmd_proxy,
         "doctor": cmd_doctor,
         "web": cmd_web,
+        "gui": lambda args: launch_native_gui(),
     }
 
     fn = dispatch.get(args.command)
