@@ -236,7 +236,10 @@ class AetherWebHandler(BaseHTTPRequestHandler):
         if req_path in ("/", ""):
             req_path = "/index.html"
 
-        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            static_dir = os.path.join(sys._MEIPASS, "aetherbond", "web", "static")
+        else:
+            static_dir = os.path.join(os.path.dirname(__file__), "static")
         full_path = os.path.normpath(os.path.join(static_dir, req_path.lstrip("/")))
 
         if not full_path.startswith(static_dir) or not os.path.isfile(full_path):

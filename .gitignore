@@ -29,5 +29,6 @@ ENV/
 htmlcov/
 *.aetherpart
 *.tmp
+*.spec
 .vscode/
 .idea/

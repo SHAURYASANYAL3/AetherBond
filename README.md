@@ -17,39 +17,50 @@
 
 ## ⚡ What is AetherBond?
 
-**AetherBond** is a high-performance network bonding and link aggregation engine designed to overcome the historical pitfalls of multi-network downloaders. 
+**AetherBond** is a high-performance network bonding and link aggregation engine. Inspired by the vision of multi-network downloaders like **Plexo**, AetherBond was engineered from the ground up to empower users to take full, simultaneous advantage of multiple internet connections (such as **Wi-Fi + Ethernet** or **Wi-Fi + Cellular Hotspot**).
 
-While tools like **Plexo** attempt to accelerate downloads by binding to local IP addresses, they fail on Windows due to the OS routing table's Weak Host model (Plexo Issue [#65](https://github.com/anmolkapil/plexo/issues/65)): packets bound only to an IP address still bleed out of the default gateway with the lowest metric (typically Ethernet), leaving Wi-Fi starved or causing TLS handshake drops.
+AetherBond combines parallel file chunking, low-level socket binding, dynamic work-stealing, and local proxy tunneling to maximize combined line throughput.
 
-**AetherBond completely solves this at the hardware level:**
-1. **True Hardware NIC Route Steering**: Uses native Winsock `IP_UNICAST_IF` (option 31) with the physical interface index (`ifIndex`), bypassing Windows default routing bias. On Linux it sets `SO_BINDTODEVICE`; on macOS it sets `IP_BOUND_IF`.
-2. **Dynamic Work-Stealing Range Chunker**: Partitions large files into concurrent byte-ranges. Fast connections automatically pull more work from the shared queue.
-3. **Speculative Tail-End Chunk Racing**: Idle fast streams race lagging chunks near the end of a download to eliminate high-latency stalls.
-4. **Transparent SOCKS5 & HTTP Multi-WAN Proxy**: Bonds Wi-Fi + Ethernet for **ANY application** (Chrome, Firefox, Steam, Epic Games, git, curl, torrent clients) by running a local multi-NIC proxy tunnel.
-5. **Real-time Cyber-Glassmorphic Web UI**: Instant dashboard with live SVG/Canvas throughput waveforms, per-adapter metrics, and task controls.
-6. **Built-in OS Network Doctor**: Detects and fixes Windows Connection Manager throttling (`fMinimizeConnections`) and weak-host conflicts.
+### 🌟 Key Highlights
 
----
+1. **Hardware-Level NIC Steering**:
+   - Uses native Winsock `IP_UNICAST_IF` (option 31) with the physical interface index (`ifIndex`) on Windows.
+   - Uses `SO_BINDTODEVICE` on Linux and `IP_BOUND_IF` on macOS.
+   - Guarantees outbound packets strictly traverse their intended hardware interface.
 
-## 📊 AetherBond vs. Plexo
+2. **Transparent Multi-WAN SOCKS5 & HTTP Proxy**:
+   - Bonds Wi-Fi + Ethernet for **ANY application** on your computer.
+   - Point your web browser, Steam, Epic Games, git, curl, or torrent client to `127.0.0.1:1080` (SOCKS5) or `127.0.0.1:8080` (HTTP) to aggregate bandwidth system-wide.
 
-| Feature | Plexo | **AetherBond** |
-| :--- | :---: | :---: |
-| **Windows Dual-NIC Support** | ❌ Broken (Issue #65: route bleed & handshake fails) | ✅ **Native `IP_UNICAST_IF` hardware steering** |
-| **Multi-WAN Proxy Aggregator** | ❌ None (file downloader only) | ✅ **Built-in SOCKS5 (:1080) & HTTP (:8080) Proxy** |
-| **Tail-End Chunk Racing** | Partial | ✅ **Speculative dynamic work-stealing & racing** |
-| **Windows Routing Doctor** | ❌ None (manual gpedit required) | ✅ **`aetherbond doctor --fix` automatic audit** |
-| **Application Footprint** | Heavy Electron GUI (~150 MB) | ✅ **Zero-bloat, instant CLI + Pure HTML5/Canvas UI** |
-| **Cross-Platform Routing** | IP binding only | ✅ **Windows (`IP_UNICAST_IF`), Linux (`SO_BINDTODEVICE`), macOS (`IP_BOUND_IF`)** |
-| **Resumable Downloads** | Basic | ✅ **Atomic `.aetherpart` state persistence + SHA-256** |
+3. **Dynamic Work-Stealing Range Chunker**:
+   - Automatically splits files into concurrent byte-ranges.
+   - Faster connections dynamically grab and complete more chunks from the shared queue.
+
+4. **Speculative Tail-End Chunk Racing**:
+   - When only a few lagging chunks remain, idle streams race them concurrently on the fastest adapter to eliminate tail latency.
+
+5. **Real-time Cyber-Glassmorphic Web Dashboard**:
+   - Live 60 FPS Canvas throughput waveform displaying individual Wi-Fi, Ethernet, and aggregate bandwidth.
+   - Per-adapter health status, speedometer gauges, and interactive task controls.
+
+6. **Windows Network Doctor & Self-Healing Optimizer**:
+   - Built-in `aetherbond doctor` utility that checks Windows Connection Manager policies (`fMinimizeConnections`) and interface metrics to ensure seamless dual-NIC operation.
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Installation
+### Option A: Standalone Executable (`.exe`)
 
-Clone and install directly in editable mode:
+Download `aetherbond.exe` from the [Releases](https://github.com/SHAURYASANYAL3/AetherBond/releases) section or build it locally. Run:
+
+```cmd
+aetherbond.exe status
+aetherbond.exe download "https://example.com/largefile.iso"
+aetherbond.exe web
+```
+
+### Option B: Python Package
 
 ```bash
 git clone https://github.com/SHAURYASANYAL3/AetherBond.git
@@ -57,7 +68,11 @@ cd AetherBond
 pip install -e .
 ```
 
-### 2. Check Hardware Interfaces & Bonding Readiness
+---
+
+## 📖 CLI Usage
+
+### 1. Check Hardware Interfaces & Bonding Readiness
 
 ```bash
 aetherbond status
@@ -77,41 +92,34 @@ Ethernet                 ETHERNET   10       192.168.1.105      1.0 Gbps     Up
   • Ethernet (192.168.1.105) [ifIndex 10]
 ```
 
-### 3. Run High-Speed Accelerated Download
+### 2. High-Speed Accelerated Download
 
 ```bash
 aetherbond download "https://example.com/largefile.iso" --streams 4
 ```
 
-### 4. Launch the Transparent Multi-WAN Proxy
+### 3. Launch the Transparent Multi-WAN Proxy Tunnel
 
 Route all your system applications, torrent clients, and browsers through both networks simultaneously:
 
 ```bash
 aetherbond proxy --socks 1080 --http 8080
 ```
-- Configure your app's proxy to `127.0.0.1:1080` (SOCKS5) or `127.0.0.1:8080` (HTTP).
+- Configure your target application's proxy settings to `127.0.0.1:1080` (SOCKS5) or `127.0.0.1:8080` (HTTP).
 
-### 5. Launch the Real-Time Web Dashboard
+### 4. Launch the Real-Time Web Dashboard
 
 ```bash
 aetherbond web --port 8765
 ```
 Open [http://127.0.0.1:8765](http://127.0.0.1:8765) in any modern browser for real-time SVG/Canvas bandwidth graphs, per-adapter speedometer dials, and download management.
 
----
+### 5. Windows Network Doctor
 
-## 🩺 Windows Dual-Route Doctor
-
-Windows by default can throttle or turn off Wi-Fi when an Ethernet cable is plugged in. Run AetherBond's built-in doctor to audit your network stack:
+Audit and optimize Windows dual-interface policies:
 
 ```bash
 aetherbond doctor
-```
-
-To automatically configure Windows Connection Manager to permit concurrent Wi-Fi + Ethernet connections:
-
-```bash
 aetherbond doctor --fix
 ```
 
@@ -155,11 +163,17 @@ aetherbond doctor --fix
 
 ## 🧪 Running Tests
 
-AetherBond includes a full unit test suite with mock range servers and socket validation:
+AetherBond includes a comprehensive unit test suite:
 
 ```bash
 python -m unittest discover -s tests
 ```
+
+---
+
+## 💡 Acknowledgements & Inspiration
+
+AetherBond is inspired by the pioneering concepts of multi-network downloaders like **Plexo**, reimagined with low-level socket binding, system-wide proxy support, and real-time telemetry.
 
 ---
 

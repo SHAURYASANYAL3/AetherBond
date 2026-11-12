@@ -62,8 +62,8 @@ class BoundSocketFactory:
         and optionally binds to its local IP address.
         """
         if sys.platform == "win32":
-            # On Windows, IP_UNICAST_IF forces outbound frames to the specified IF index
-            # bypassing default gateway metric bias (solving Plexo #65).
+            # On Windows, IP_UNICAST_IF forces outbound frames to the specified IF index,
+            # ensuring deterministic physical NIC route steering.
             idx_bytes = struct.pack("!I", adapter.if_index)
             try:
                 if is_ipv6:

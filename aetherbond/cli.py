@@ -11,6 +11,14 @@ import os
 import sys
 import time
 
+# Ensure Windows terminal outputs UTF-8 cleanly without charmap errors
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from aetherbond.core.adapter import AdapterManager
 from aetherbond.core.downloader import DownloadStatus, TurboDownloader
 from aetherbond.core.optimizer import SystemOptimizer
