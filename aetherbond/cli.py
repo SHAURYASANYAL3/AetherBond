@@ -9,6 +9,7 @@ import argparse
 import logging
 import os
 import sys
+import threading
 import time
 
 # Ensure Windows terminal outputs UTF-8 cleanly without charmap errors
@@ -233,7 +234,40 @@ def main():
     args = parser.parse_args()
 
     if not args.command:
-        parser.print_help()
+        # Default action when double-clicked in Windows Explorer or launched with no args:
+        # Automatically launch Web Dashboard, start background multi-NIC proxy, and open browser!
+        print_banner()
+        port = 8765
+        dash_url = f"http://127.0.0.1:{port}"
+
+        print(f"{GREEN}{BOLD}⚡ Launching AetherBond Interactive Dashboard & Link Engine...{RESET}")
+        print("-" * 80)
+        print(f" • {BOLD}Web Dashboard UI:{RESET}   {CYAN}{dash_url}{RESET} (Opening in default browser...)")
+        print(f" • {BOLD}Multi-WAN SOCKS5:{RESET}   {CYAN}127.0.0.1:1080{RESET}")
+        print(f" • {BOLD}Multi-WAN HTTP:{RESET}     {CYAN}127.0.0.1:8080{RESET}")
+        print("-" * 80)
+        print(f"{YELLOW}[Keep this window open while AetherBond is active. Press Ctrl+C to exit]{RESET}\n")
+
+        # Launch the proxy in the background
+        proxy = MultiNicProxy(socks5_port=1080, http_port=8080)
+        threading.Thread(target=proxy.start, args=(False,), daemon=True).start()
+
+        # Open web browser after a brief delay
+        def open_browser():
+            time.sleep(0.8)
+            import webbrowser
+            try:
+                webbrowser.open(dash_url)
+            except Exception:
+                pass
+
+        threading.Thread(target=open_browser, daemon=True).start()
+
+        # Run web dashboard (blocking)
+        try:
+            run_web_dashboard(port=port, blocking=True)
+        except KeyboardInterrupt:
+            print(f"\n{YELLOW}AetherBond stopped.{RESET}")
         sys.exit(0)
 
     dispatch = {
