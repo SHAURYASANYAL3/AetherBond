@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AetherBond — Multi-WAN Dual-Link Aggregator</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="glow-orb orb-1"></div>
+  <div class="glow-orb orb-2"></div>
+
+  <div class="app-container">
+    <!-- Header -->
+    <header class="navbar">
+      <div class="brand">
+        <div class="logo-icon">⚡</div>
+        <div>
+          <h1 class="logo-title">AETHER<span>BOND</span></h1>
+          <p class="logo-sub">Multi-WAN Dual-NIC Link Aggregation Engine</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div class="status-badge" id="system-status">
+          <span class="status-dot"></span>
+          <span id="status-text">MONITORING</span>
+        </div>
+        <button class="btn btn-secondary" id="btn-doctor" title="Run OS Routing Diagnostics">🩺 Network Doctor</button>
+      </div>
+    </header>
+
+    <!-- Speed Gauge Cards Grid -->
+    <section class="metrics-grid">
+      <div class="card metric-card total-card">
+        <div class="card-header">
+          <span class="card-label">TOTAL AGGREGATED SPEED</span>
+          <span class="badge badge-accent">COMBINED</span>
+        </div>
+        <div class="metric-val" id="total-speed">0.0 <span>MB/s</span></div>
+        <div class="metric-sub">Full bonded bandwidth summation</div>
+      </div>
+
+      <div class="card metric-card wifi-card">
+        <div class="card-header">
+          <span class="card-label">WI-FI INTERFACE</span>
+          <span class="badge badge-wifi" id="wifi-badge">ACTIVE</span>
+        </div>
+        <div class="metric-val" id="wifi-speed">0.0 <span>MB/s</span></div>
+        <div class="metric-sub" id="wifi-nic-name">Wi-Fi (ifIndex --)</div>
+      </div>
+
+      <div class="card metric-card eth-card">
+        <div class="card-header">
+          <span class="card-label">ETHERNET INTERFACE</span>
+          <span class="badge badge-eth" id="eth-badge">STANDBY</span>
+        </div>
+        <div class="metric-val" id="eth-speed">0.0 <span>MB/s</span></div>
+        <div class="metric-sub" id="eth-nic-name">Ethernet (ifIndex --)</div>
+      </div>
+
+      <div class="card metric-card proxy-card">
+        <div class="card-header">
+          <span class="card-label">MULTI-WAN PROXY</span>
+          <span class="badge badge-proxy" id="proxy-badge">OFFLINE</span>
+        </div>
+        <div class="metric-val" id="proxy-status-val">SOCKS5 / HTTP</div>
+        <div class="metric-sub" id="proxy-sub">Port 1080 / 8080</div>
+      </div>
+    </section>
+
+    <!-- Real-time Bandwidth Canvas Waveform -->
+    <section class="card chart-section">
+      <div class="card-header">
+        <div class="chart-title">
+          <span class="pulse-icon"></span>
+          <span>LIVE TELEMETRY WAVEFORM</span>
+        </div>
+        <div class="chart-legend">
+          <span class="legend-item"><span class="dot dot-total"></span> Total</span>
+          <span class="legend-item"><span class="dot dot-wifi"></span> Wi-Fi</span>
+          <span class="legend-item"><span class="dot dot-eth"></span> Ethernet</span>
+        </div>
+      </div>
+      <div class="canvas-container">
+        <canvas id="speedChart" width="1000" height="200"></canvas>
+      </div>
+    </section>
+
+    <!-- Main Workspace Split: Turbo Downloader & Proxy Manager -->
+    <div class="workspace-grid">
+      <!-- Left Column: Turbo Downloader -->
+      <section class="card downloader-section">
+        <div class="card-header">
+          <h2 class="section-title">🚀 Turbo Downloader</h2>
+          <span class="badge badge-dim">Multi-Stream Range Chunker</span>
+        </div>
+
+        <form id="download-form" class="download-bar">
+          <input type="url" id="dl-url" placeholder="Paste file URL (HTTP / HTTPS / ISO / Direct Link)..." required autocomplete="off">
+          <div class="threads-selector">
+            <label for="dl-threads">Streams/NIC:</label>
+            <input type="number" id="dl-threads" value="4" min="1" max="16">
+          </div>
+          <button type="submit" class="btn btn-primary" id="btn-start-dl">Bond & Download</button>
+        </form>
+
+        <div id="active-download-card" class="active-task-container hidden">
+          <div class="task-info">
+            <div class="task-title-row">
+              <span class="task-name" id="task-filename">ubuntu-24.04.iso</span>
+              <span class="task-percent" id="task-percent">0%</span>
+            </div>
+            <div class="progress-bar-track">
+              <div class="progress-bar-fill" id="task-fill" style="width: 0%"></div>
+            </div>
+            <div class="task-meta-row">
+              <span id="task-transferred">0 MB / 0 MB</span>
+              <span id="task-eta">ETA: Calculating...</span>
+              <span id="task-current-speed" class="text-accent">0 MB/s</span>
+            </div>
+          </div>
+          <div class="task-actions">
+            <button class="btn btn-small" id="btn-pause">Pause</button>
+            <button class="btn btn-small btn-danger" id="btn-cancel">Cancel</button>
+          </div>
+        </div>
+
+        <div id="no-download-placeholder" class="empty-state">
+          <div class="empty-icon">📥</div>
+          <p>No active downloads in progress. Enter a target URL above to start dual-pipe parallel acceleration.</p>
+        </div>
+      </section>
+
+      <!-- Right Column: Multi-NIC SOCKS5/HTTP Proxy -->
+      <section class="card proxy-section">
+        <div class="card-header">
+          <h2 class="section-title">🌐 Multi-WAN Proxy Tunnel</h2>
+          <span class="badge badge-dim">SOCKS5 :1080 | HTTP :8080</span>
+        </div>
+        <p class="proxy-desc">
+          Route your browser, Steam, git, or download manager through AetherBond's local proxy to aggregate Wi-Fi + Ethernet speed for all applications!
+        </p>
+
+        <div class="proxy-controls">
+          <button class="btn btn-primary" id="btn-toggle-proxy">Start Aggregator Proxy</button>
+          <div class="proxy-config-snippet">
+            <code>SOCKS5: 127.0.0.1:1080<br>HTTP:   127.0.0.1:8080</code>
+          </div>
+        </div>
+
+        <div class="proxy-stats-box">
+          <div class="stat-row">
+            <span>Active Proxy Tunnels:</span>
+            <strong id="proxy-conns">0</strong>
+          </div>
+          <div class="stat-row">
+            <span>Proxy Throughput:</span>
+            <strong id="proxy-spd" class="text-accent">0.0 MB/s</strong>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Network Adapters Inspector Table -->
+    <section class="card adapters-section">
+      <div class="card-header">
+        <h2 class="section-title">🔌 Hardware Network Interfaces</h2>
+        <button class="btn btn-small" id="btn-refresh-adapters">↻ Refresh Adapters</button>
+      </div>
+
+      <div class="table-container">
+        <table class="adapters-table">
+          <thead>
+            <tr>
+              <th>Interface</th>
+              <th>Type</th>
+              <th>ifIndex</th>
+              <th>IP Address</th>
+              <th>Gateway</th>
+              <th>Link Speed</th>
+              <th>Status</th>
+              <th>Bond Ready</th>
+            </tr>
+          </thead>
+          <tbody id="adapters-tbody">
+            <tr><td colspan="8" class="text-center">Scanning hardware adapters...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Network Doctor Modal -->
+    <div id="doctor-modal" class="modal hidden">
+      <div class="modal-content card">
+        <div class="modal-header">
+          <h3>🩺 Windows / OS Dual-Link Doctor</h3>
+          <button class="btn-close" id="btn-close-doctor">✕</button>
+        </div>
+        <div class="modal-body" id="doctor-report">
+          <p>Running diagnostics...</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-primary" id="btn-fix-windows">Auto-Fix Windows Dual-Route Policy</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
